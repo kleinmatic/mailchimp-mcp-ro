@@ -1,5 +1,265 @@
 import { MailchimpService } from "../services/mailchimp.js";
 
+// --- Runtime validation -----------------------------------------------------
+
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const HASH_RE = /^[a-f0-9]{32}$/;
+const STRING_ID_KEYS = new Set([
+  "workflow_id",
+  "email_id",
+  "list_id",
+  "campaign_id",
+  "store_id",
+  "product_id",
+  "order_id",
+  "folder_id",
+  "file_id",
+  "page_id",
+  "conversation_id",
+  "category_id",
+  "interest_id",
+  "webhook_id",
+  "note_id",
+  "goal_id",
+  "customer_id",
+  "variant_id",
+  "cart_id",
+  "promo_rule_id",
+  "promo_code_id",
+]);
+const HASH_KEYS = new Set(["subscriber_hash"]);
+const NUMERIC_ID_KEYS = new Set([
+  "segment_id",
+  "template_id",
+  "merge_field_id",
+  "tag_id",
+]);
+
+function validateArgs(args: any): void {
+  if (args === undefined || args === null) return;
+  if (typeof args !== "object" || Array.isArray(args)) {
+    throw new Error("Tool arguments must be an object");
+  }
+  for (const [key, raw] of Object.entries(args)) {
+    if (raw === undefined || raw === null) continue;
+    if (STRING_ID_KEYS.has(key)) {
+      if (typeof raw !== "string" || !ID_RE.test(raw)) {
+        throw new Error(`Invalid value for ${key}`);
+      }
+    } else if (HASH_KEYS.has(key)) {
+      if (typeof raw !== "string" || !HASH_RE.test(raw)) {
+        throw new Error(`Invalid value for ${key}`);
+      }
+    } else if (NUMERIC_ID_KEYS.has(key)) {
+      if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0) {
+        throw new Error(`Invalid value for ${key}`);
+      }
+    }
+  }
+}
+
+// --- Content sanitization ---------------------------------------------------
+
+// Strip bidi overrides (U+202A–U+202E, U+2066–U+2069), zero-width chars
+// (U+200B–U+200D, U+2060, U+FEFF) after NFKC normalization.
+const SMUGGLE_RE = /[\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\uFEFF]/gu;
+
+function normalize(s: string): string {
+  return s.normalize("NFKC").replace(SMUGGLE_RE, "");
+}
+
+function untrusted(kind: string, text: unknown, maxLen = 4000): string {
+  const s = normalize(String(text ?? ""));
+  const escaped = s.replace(/<\/?untrusted[^>]*>/gi, "");
+  const capped =
+    escaped.length > maxLen ? escaped.slice(0, maxLen) + "…[truncated]" : escaped;
+  return `<untrusted kind="${kind}">${capped}</untrusted>`;
+}
+
+// --- PII projectors ---------------------------------------------------------
+
+function wrapMergeFields(mf: any): any {
+  if (!mf || typeof mf !== "object" || Array.isArray(mf)) return mf;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(mf)) {
+    out[k] =
+      typeof v === "string" ? untrusted(`merge-field:${k}`, v) : v;
+  }
+  return out;
+}
+
+function redactAddress(addr: any): any {
+  if (!addr || typeof addr !== "object") return addr;
+  return typeof addr.country_code === "string"
+    ? { country_code: addr.country_code }
+    : {};
+}
+
+function projectMember(m: any): any {
+  if (!m || typeof m !== "object") return m;
+  const {
+    ip_signup,
+    ip_opt,
+    location,
+    unique_email_id,
+    web_id,
+    ...rest
+  } = m;
+  if (rest.email_address !== undefined) {
+    rest.email_address = untrusted("email", rest.email_address);
+  }
+  if (rest.merge_fields !== undefined) {
+    rest.merge_fields = wrapMergeFields(rest.merge_fields);
+  }
+  return rest;
+}
+
+function projectOrder(o: any): any {
+  if (!o || typeof o !== "object") return o;
+  const { billing_address, shipping_address, ...rest } = o;
+  const result: any = { ...rest };
+  if (billing_address !== undefined) {
+    result.billing_address = redactAddress(billing_address);
+  }
+  if (shipping_address !== undefined) {
+    result.shipping_address = redactAddress(shipping_address);
+  }
+  return result;
+}
+
+function projectConversation(c: any): any {
+  if (!c || typeof c !== "object") return c;
+  const {
+    ip_signup,
+    ip_opt,
+    location,
+    unique_email_id,
+    web_id,
+    ...rest
+  } = c;
+  if (rest.subject !== undefined) {
+    rest.subject = untrusted("conversation-subject", rest.subject);
+  }
+  if (rest.from_email !== undefined) {
+    rest.from_email = untrusted("conversation-from-email", rest.from_email);
+  }
+  if (rest.from_label !== undefined) {
+    rest.from_label = untrusted("conversation-from-label", rest.from_label);
+  }
+  if (rest.message !== undefined) {
+    rest.message = untrusted("conversation-message", rest.message, 8000);
+  }
+  return rest;
+}
+
+function wrapCampaignSettings(settings: any): any {
+  if (!settings || typeof settings !== "object") return settings;
+  const out: any = { ...settings };
+  if (out.subject_line !== undefined) {
+    out.subject_line = untrusted("campaign-subject-line", out.subject_line);
+  }
+  if (out.preview_text !== undefined) {
+    out.preview_text = untrusted("campaign-preview-text", out.preview_text);
+  }
+  if (out.title !== undefined) {
+    out.title = untrusted("campaign-title", out.title);
+  }
+  if (out.from_name !== undefined) {
+    out.from_name = untrusted("campaign-from-name", out.from_name);
+  }
+  if (out.reply_to !== undefined) {
+    out.reply_to = untrusted("campaign-reply-to", out.reply_to);
+  }
+  return out;
+}
+
+function projectCampaign(c: any): any {
+  if (!c || typeof c !== "object") return c;
+  const out: any = { ...c };
+  if (out.settings !== undefined) {
+    out.settings = wrapCampaignSettings(out.settings);
+  }
+  return out;
+}
+
+function projectTemplate(t: any): any {
+  if (!t || typeof t !== "object") return t;
+  const out: any = { ...t };
+  if (out.name !== undefined) {
+    out.name = untrusted("template-name", out.name);
+  }
+  if (out.content !== undefined) {
+    if (typeof out.content === "string") {
+      out.content = untrusted("template-content", out.content, 8000);
+    } else if (typeof out.content === "object" && out.content !== null) {
+      const inner: any = { ...out.content };
+      if (typeof inner.html === "string") {
+        inner.html = untrusted("template-html", inner.html, 8000);
+      }
+      if (typeof inner.plain_text === "string") {
+        inner.plain_text = untrusted(
+          "template-plain-text",
+          inner.plain_text,
+          8000
+        );
+      }
+      out.content = inner;
+    }
+  }
+  return out;
+}
+
+function wrapAutomationSettings(settings: any): any {
+  if (!settings || typeof settings !== "object") return settings;
+  const out: any = { ...settings };
+  if (out.subject_line !== undefined) {
+    out.subject_line = untrusted("automation-subject-line", out.subject_line);
+  }
+  if (out.from_name !== undefined) {
+    out.from_name = untrusted("automation-from-name", out.from_name);
+  }
+  if (out.reply_to !== undefined) {
+    out.reply_to = untrusted("automation-reply-to", out.reply_to);
+  }
+  return out;
+}
+
+function projectAutomation(a: any): any {
+  if (!a || typeof a !== "object") return a;
+  const out: any = { ...a };
+  if (out.settings !== undefined) {
+    out.settings = wrapAutomationSettings(out.settings);
+  }
+  return out;
+}
+
+function projectAutomationEmail(ae: any): any {
+  return projectAutomation(ae);
+}
+
+// --- JSON schema fragments --------------------------------------------------
+
+const S_STR_ID = (description: string) => ({
+  type: "string",
+  pattern: "^[A-Za-z0-9_-]{1,64}$",
+  maxLength: 64,
+  description,
+});
+const S_SUB_HASH = {
+  type: "string",
+  pattern: "^[a-f0-9]{32}$",
+  minLength: 32,
+  maxLength: 32,
+  description: "The subscriber hash",
+};
+const S_NUM_ID = (description: string) => ({
+  type: "integer",
+  minimum: 0,
+  description,
+});
+
+// --- Tool definitions -------------------------------------------------------
+
 export const getToolDefinitions = (service: MailchimpService) => [
   {
     name: "list_automations",
@@ -8,6 +268,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -16,12 +277,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
       },
       required: ["workflow_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -30,12 +289,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
       },
       required: ["workflow_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -44,16 +301,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
-        email_id: {
-          type: "string",
-          description: "The email ID within the automation",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
+        email_id: S_STR_ID("The email ID within the automation"),
       },
       required: ["workflow_id", "email_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -62,16 +314,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
-        email_id: {
-          type: "string",
-          description: "The email ID within the automation",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
+        email_id: S_STR_ID("The email ID within the automation"),
       },
       required: ["workflow_id", "email_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -80,16 +327,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
-        email_id: {
-          type: "string",
-          description: "The email ID within the automation",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
+        email_id: S_STR_ID("The email ID within the automation"),
       },
       required: ["workflow_id", "email_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -100,6 +342,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -108,12 +351,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        list_id: {
-          type: "string",
-          description: "The list ID",
-        },
+        list_id: S_STR_ID("The list ID"),
       },
       required: ["list_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -122,12 +363,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
       },
       required: ["workflow_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -136,16 +375,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
-        email_id: {
-          type: "string",
-          description: "The email ID within the automation",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
+        email_id: S_STR_ID("The email ID within the automation"),
       },
       required: ["workflow_id", "email_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -154,20 +388,12 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        workflow_id: {
-          type: "string",
-          description: "The workflow ID of the automation",
-        },
-        email_id: {
-          type: "string",
-          description: "The email ID within the automation",
-        },
-        subscriber_hash: {
-          type: "string",
-          description: "The subscriber hash",
-        },
+        workflow_id: S_STR_ID("The workflow ID of the automation"),
+        email_id: S_STR_ID("The email ID within the automation"),
+        subscriber_hash: S_SUB_HASH,
       },
       required: ["workflow_id", "email_id", "subscriber_hash"],
+      additionalProperties: false,
     },
   },
   // Campaign Management
@@ -178,6 +404,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -186,12 +413,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        campaign_id: {
-          type: "string",
-          description: "The campaign ID",
-        },
+        campaign_id: S_STR_ID("The campaign ID"),
       },
       required: ["campaign_id"],
+      additionalProperties: false,
     },
   },
   // Member Management
@@ -201,12 +426,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        list_id: {
-          type: "string",
-          description: "The list ID",
-        },
+        list_id: S_STR_ID("The list ID"),
       },
       required: ["list_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -215,16 +438,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        list_id: {
-          type: "string",
-          description: "The list ID",
-        },
-        subscriber_hash: {
-          type: "string",
-          description: "The subscriber hash",
-        },
+        list_id: S_STR_ID("The list ID"),
+        subscriber_hash: S_SUB_HASH,
       },
       required: ["list_id", "subscriber_hash"],
+      additionalProperties: false,
     },
   },
   // Segment Management
@@ -234,12 +452,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        list_id: {
-          type: "string",
-          description: "The list ID",
-        },
+        list_id: S_STR_ID("The list ID"),
       },
       required: ["list_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -248,16 +464,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        list_id: {
-          type: "string",
-          description: "The list ID",
-        },
-        segment_id: {
-          type: "number",
-          description: "The segment ID",
-        },
+        list_id: S_STR_ID("The list ID"),
+        segment_id: S_NUM_ID("The segment ID"),
       },
       required: ["list_id", "segment_id"],
+      additionalProperties: false,
     },
   },
   // Template Management
@@ -268,6 +479,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -276,12 +488,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        template_id: {
-          type: "number",
-          description: "The template ID",
-        },
+        template_id: S_NUM_ID("The template ID"),
       },
       required: ["template_id"],
+      additionalProperties: false,
     },
   },
   // Campaign Reports
@@ -292,6 +502,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -300,12 +511,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        campaign_id: {
-          type: "string",
-          description: "The campaign ID",
-        },
+        campaign_id: S_STR_ID("The campaign ID"),
       },
       required: ["campaign_id"],
+      additionalProperties: false,
     },
   },
   // Account Information
@@ -316,6 +525,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   // Folder Management
@@ -326,6 +536,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -334,12 +545,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        folder_id: {
-          type: "string",
-          description: "The folder ID",
-        },
+        folder_id: S_STR_ID("The folder ID"),
       },
       required: ["folder_id"],
+      additionalProperties: false,
     },
   },
   // Merge Fields
@@ -349,12 +558,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        list_id: {
-          type: "string",
-          description: "The list ID",
-        },
+        list_id: S_STR_ID("The list ID"),
       },
       required: ["list_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -363,16 +570,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        list_id: {
-          type: "string",
-          description: "The list ID",
-        },
-        merge_field_id: {
-          type: "number",
-          description: "The merge field ID",
-        },
+        list_id: S_STR_ID("The list ID"),
+        merge_field_id: S_NUM_ID("The merge field ID"),
       },
       required: ["list_id", "merge_field_id"],
+      additionalProperties: false,
     },
   },
   // File Manager
@@ -383,6 +585,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -391,12 +594,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        file_id: {
-          type: "string",
-          description: "The file ID",
-        },
+        file_id: S_STR_ID("The file ID"),
       },
       required: ["file_id"],
+      additionalProperties: false,
     },
   },
   // Landing Pages
@@ -407,6 +608,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -415,12 +617,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        page_id: {
-          type: "string",
-          description: "The landing page ID",
-        },
+        page_id: S_STR_ID("The landing page ID"),
       },
       required: ["page_id"],
+      additionalProperties: false,
     },
   },
   // E-commerce Stores
@@ -431,6 +631,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -439,12 +640,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        store_id: {
-          type: "string",
-          description: "The store ID",
-        },
+        store_id: S_STR_ID("The store ID"),
       },
       required: ["store_id"],
+      additionalProperties: false,
     },
   },
   // E-commerce Products
@@ -454,12 +653,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        store_id: {
-          type: "string",
-          description: "The store ID",
-        },
+        store_id: S_STR_ID("The store ID"),
       },
       required: ["store_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -468,16 +665,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        store_id: {
-          type: "string",
-          description: "The store ID",
-        },
-        product_id: {
-          type: "string",
-          description: "The product ID",
-        },
+        store_id: S_STR_ID("The store ID"),
+        product_id: S_STR_ID("The product ID"),
       },
       required: ["store_id", "product_id"],
+      additionalProperties: false,
     },
   },
   // E-commerce Orders
@@ -487,12 +679,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        store_id: {
-          type: "string",
-          description: "The store ID",
-        },
+        store_id: S_STR_ID("The store ID"),
       },
       required: ["store_id"],
+      additionalProperties: false,
     },
   },
   {
@@ -501,16 +691,11 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        store_id: {
-          type: "string",
-          description: "The store ID",
-        },
-        order_id: {
-          type: "string",
-          description: "The order ID",
-        },
+        store_id: S_STR_ID("The store ID"),
+        order_id: S_STR_ID("The order ID"),
       },
       required: ["store_id", "order_id"],
+      additionalProperties: false,
     },
   },
   // Conversations
@@ -521,6 +706,7 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
     },
   },
   {
@@ -529,21 +715,22 @@ export const getToolDefinitions = (service: MailchimpService) => [
     inputSchema: {
       type: "object",
       properties: {
-        conversation_id: {
-          type: "string",
-          description: "The conversation ID",
-        },
+        conversation_id: S_STR_ID("The conversation ID"),
       },
       required: ["conversation_id"],
+      additionalProperties: false,
     },
   },
 ];
+
+// --- Handler ----------------------------------------------------------------
 
 export const handleToolCall = async (
   service: MailchimpService,
   name: string,
   args: any
 ) => {
+  validateArgs(args);
   switch (name) {
     case "list_automations":
       const automations = await service.listAutomations();
@@ -552,12 +739,12 @@ export const handleToolCall = async (
           {
             type: "text",
             text: JSON.stringify(
-              automations.automations.map((a) => ({
-                id: a.id,
-                name: a.name,
-                status: a.status,
-                type: a.type,
-                create_time: a.create_time,
+              automations.automations.map((auto) => ({
+                id: auto.id,
+                name: auto.name,
+                status: auto.status,
+                type: auto.type,
+                create_time: auto.create_time,
               })),
               null,
               2
@@ -572,7 +759,7 @@ export const handleToolCall = async (
         content: [
           {
             type: "text",
-            text: JSON.stringify(automation, null, 2),
+            text: JSON.stringify(projectAutomation(automation), null, 2),
           },
         ],
       };
@@ -588,7 +775,10 @@ export const handleToolCall = async (
                 id: e.id,
                 position: e.position,
                 status: e.status,
-                subject_line: e.settings.subject_line,
+                subject_line: untrusted(
+                  "automation-subject-line",
+                  e.settings.subject_line
+                ),
                 emails_sent: e.emails_sent,
               })),
               null,
@@ -607,7 +797,7 @@ export const handleToolCall = async (
         content: [
           {
             type: "text",
-            text: JSON.stringify(email, null, 2),
+            text: JSON.stringify(projectAutomationEmail(email), null, 2),
           },
         ],
       };
@@ -623,9 +813,9 @@ export const handleToolCall = async (
             type: "text",
             text: JSON.stringify(
               subscribers.subscribers.map((s) => ({
-                email_address: s.email_address,
+                email_address: untrusted("email", s.email_address),
                 status: s.status,
-                merge_fields: s.merge_fields,
+                merge_fields: wrapMergeFields(s.merge_fields),
               })),
               null,
               2
@@ -747,7 +937,7 @@ export const handleToolCall = async (
         content: [
           {
             type: "text",
-            text: JSON.stringify(campaign, null, 2),
+            text: JSON.stringify(projectCampaign(campaign), null, 2),
           },
         ],
       };
@@ -762,7 +952,7 @@ export const handleToolCall = async (
             text: JSON.stringify(
               members.members.map((m) => ({
                 id: m.id,
-                email_address: m.email_address,
+                email_address: untrusted("email", m.email_address),
                 status: m.status,
                 member_rating: m.member_rating,
                 last_changed: m.last_changed,
@@ -783,7 +973,7 @@ export const handleToolCall = async (
         content: [
           {
             type: "text",
-            text: JSON.stringify(member, null, 2),
+            text: JSON.stringify(projectMember(member), null, 2),
           },
         ],
       };
@@ -831,7 +1021,7 @@ export const handleToolCall = async (
             text: JSON.stringify(
               templates.templates.map((t) => ({
                 id: t.id,
-                name: t.name,
+                name: untrusted("template-name", t.name),
                 type: t.type,
                 drag_and_drop: t.drag_and_drop,
                 responsive: t.responsive,
@@ -851,7 +1041,7 @@ export const handleToolCall = async (
         content: [
           {
             type: "text",
-            text: JSON.stringify(template, null, 2),
+            text: JSON.stringify(projectTemplate(template), null, 2),
           },
         ],
       };
@@ -1126,7 +1316,7 @@ export const handleToolCall = async (
         content: [
           {
             type: "text",
-            text: JSON.stringify(order, null, 2),
+            text: JSON.stringify(projectOrder(order), null, 2),
           },
         ],
       };
@@ -1141,8 +1331,11 @@ export const handleToolCall = async (
             text: JSON.stringify(
               conversations.conversations.map((c) => ({
                 id: c.id,
-                subject: c.subject,
-                from_email: c.from_email,
+                subject: untrusted("conversation-subject", c.subject),
+                from_email: untrusted(
+                  "conversation-from-email",
+                  c.from_email
+                ),
                 timestamp: c.timestamp,
               })),
               null,
@@ -1158,7 +1351,7 @@ export const handleToolCall = async (
         content: [
           {
             type: "text",
-            text: JSON.stringify(conversation, null, 2),
+            text: JSON.stringify(projectConversation(conversation), null, 2),
           },
         ],
       };
