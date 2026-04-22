@@ -22,7 +22,10 @@ import {
   MailchimpMergeField,
 } from "../types/index.js";
 
-const FETCH_TIMEOUT_MS = 30_000;
+// 60s: Mailchimp's /reports endpoint commonly returns in 25-30s on accounts
+// with real campaign history, so a 30s cap produces spurious timeouts. Still
+// short enough to bound model-DoS risk.
+const FETCH_TIMEOUT_MS = 60_000;
 const DATA_CENTER_RE = /^[a-z]{2}\d{1,3}$/;
 const API_KEY_RE = /^[a-f0-9]{32}-[a-z]{2}\d{1,3}$/i;
 
