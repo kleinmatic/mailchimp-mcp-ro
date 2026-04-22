@@ -34,6 +34,9 @@ const NUMERIC_ID_KEYS = new Set([
   "merge_field_id",
   "tag_id",
 ]);
+const PAGINATION_KEYS = new Set(["count", "offset"]);
+const COUNT_MAX = 500;
+const OFFSET_MAX = 1_000_000;
 
 function validateArgs(args: any): void {
   if (args === undefined || args === null) return;
@@ -53,6 +56,16 @@ function validateArgs(args: any): void {
     } else if (NUMERIC_ID_KEYS.has(key)) {
       if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0) {
         throw new Error(`Invalid value for ${key}`);
+      }
+    } else if (PAGINATION_KEYS.has(key)) {
+      if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0) {
+        throw new Error(`Invalid value for ${key}`);
+      }
+      if (key === "count" && (raw < 1 || raw > COUNT_MAX)) {
+        throw new Error(`Invalid value for count (must be 1..${COUNT_MAX})`);
+      }
+      if (key === "offset" && raw > OFFSET_MAX) {
+        throw new Error(`Invalid value for offset (max ${OFFSET_MAX})`);
       }
     }
   }
@@ -239,6 +252,18 @@ function projectAutomationEmail(ae: any): any {
 
 // --- JSON schema fragments --------------------------------------------------
 
+const S_COUNT = {
+  type: "integer",
+  minimum: 1,
+  maximum: COUNT_MAX,
+  description: `Page size (default 50, max ${COUNT_MAX})`,
+};
+const S_OFFSET = {
+  type: "integer",
+  minimum: 0,
+  maximum: OFFSET_MAX,
+  description: "Page offset (default 0)",
+};
 const S_STR_ID = (description: string) => ({
   type: "string",
   pattern: "^[A-Za-z0-9_-]{1,64}$",
@@ -266,7 +291,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all automations in your Mailchimp account",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -290,6 +318,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {
         workflow_id: S_STR_ID("The workflow ID of the automation"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["workflow_id"],
       additionalProperties: false,
@@ -316,6 +346,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       properties: {
         workflow_id: S_STR_ID("The workflow ID of the automation"),
         email_id: S_STR_ID("The email ID within the automation"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["workflow_id", "email_id"],
       additionalProperties: false,
@@ -329,6 +361,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       properties: {
         workflow_id: S_STR_ID("The workflow ID of the automation"),
         email_id: S_STR_ID("The email ID within the automation"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["workflow_id", "email_id"],
       additionalProperties: false,
@@ -340,7 +374,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
       "List all lists in your Mailchimp account (for automation recipients)",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -402,7 +439,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all campaigns in your Mailchimp account",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -427,6 +467,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {
         list_id: S_STR_ID("The list ID"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["list_id"],
       additionalProperties: false,
@@ -453,6 +495,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {
         list_id: S_STR_ID("The list ID"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["list_id"],
       additionalProperties: false,
@@ -477,7 +521,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all templates in your Mailchimp account",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -500,7 +547,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all campaign reports",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -534,7 +584,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all campaign folders",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -559,6 +612,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {
         list_id: S_STR_ID("The list ID"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["list_id"],
       additionalProperties: false,
@@ -583,7 +638,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all files in the File Manager",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -606,7 +664,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all landing pages",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -629,7 +690,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all e-commerce stores",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -654,6 +718,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {
         store_id: S_STR_ID("The store ID"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["store_id"],
       additionalProperties: false,
@@ -680,6 +746,8 @@ export const getToolDefinitions = (service: MailchimpService) => [
       type: "object",
       properties: {
         store_id: S_STR_ID("The store ID"),
+        count: S_COUNT,
+        offset: S_OFFSET,
       },
       required: ["store_id"],
       additionalProperties: false,
@@ -704,7 +772,10 @@ export const getToolDefinitions = (service: MailchimpService) => [
     description: "List all conversations",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        count: S_COUNT,
+        offset: S_OFFSET,
+      },
       required: [],
       additionalProperties: false,
     },
@@ -731,9 +802,10 @@ export const handleToolCall = async (
   args: any
 ) => {
   validateArgs(args);
+  const a = (args ?? {}) as any;
   switch (name) {
-    case "list_automations":
-      const automations = await service.listAutomations();
+    case "list_automations": {
+      const automations = await service.listAutomations(a.count, a.offset);
       return {
         content: [
           {
@@ -752,9 +824,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_automation":
-      const automation = await service.getAutomation(args.workflow_id);
+    case "get_automation": {
+      const automation = await service.getAutomation(a.workflow_id);
       return {
         content: [
           {
@@ -763,9 +836,14 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "list_automation_emails":
-      const emails = await service.listAutomationEmails(args.workflow_id);
+    case "list_automation_emails": {
+      const emails = await service.listAutomationEmails(
+        a.workflow_id,
+        a.count,
+        a.offset
+      );
       return {
         content: [
           {
@@ -787,12 +865,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_automation_email":
-      const email = await service.getAutomationEmail(
-        args.workflow_id,
-        args.email_id
-      );
+    case "get_automation_email": {
+      const email = await service.getAutomationEmail(a.workflow_id, a.email_id);
       return {
         content: [
           {
@@ -801,11 +877,14 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "list_automation_subscribers":
+    case "list_automation_subscribers": {
       const subscribers = await service.listAutomationSubscribers(
-        args.workflow_id,
-        args.email_id
+        a.workflow_id,
+        a.email_id,
+        a.count,
+        a.offset
       );
       return {
         content: [
@@ -823,11 +902,14 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_automation_queue":
+    case "get_automation_queue": {
       const queue = await service.getAutomationQueue(
-        args.workflow_id,
-        args.email_id
+        a.workflow_id,
+        a.email_id,
+        a.count,
+        a.offset
       );
       return {
         content: [
@@ -837,9 +919,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "list_lists":
-      const lists = await service.listLists();
+    case "list_lists": {
+      const lists = await service.listLists(a.count, a.offset);
       return {
         content: [
           {
@@ -857,9 +940,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_list":
-      const list = await service.getList(args.list_id);
+    case "get_list": {
+      const list = await service.getList(a.list_id);
       return {
         content: [
           {
@@ -868,9 +952,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_automation_report":
-      const report = await service.getAutomationReport(args.workflow_id);
+    case "get_automation_report": {
+      const report = await service.getAutomationReport(a.workflow_id);
       return {
         content: [
           {
@@ -879,11 +964,12 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_automation_email_report":
+    case "get_automation_email_report": {
       const emailReport = await service.getAutomationEmailReport(
-        args.workflow_id,
-        args.email_id
+        a.workflow_id,
+        a.email_id
       );
       return {
         content: [
@@ -893,12 +979,13 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_subscriber_activity":
+    case "get_subscriber_activity": {
       const activity = await service.getSubscriberActivity(
-        args.workflow_id,
-        args.email_id,
-        args.subscriber_hash
+        a.workflow_id,
+        a.email_id,
+        a.subscriber_hash
       );
       return {
         content: [
@@ -908,10 +995,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Campaign Management
-    case "list_campaigns":
-      const campaigns = await service.listCampaigns();
+    case "list_campaigns": {
+      const campaigns = await service.listCampaigns(a.count, a.offset);
       return {
         content: [
           {
@@ -930,9 +1018,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_campaign":
-      const campaign = await service.getCampaign(args.campaign_id);
+    case "get_campaign": {
+      const campaign = await service.getCampaign(a.campaign_id);
       return {
         content: [
           {
@@ -941,10 +1030,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Member Management
-    case "list_members":
-      const members = await service.listMembers(args.list_id);
+    case "list_members": {
+      const members = await service.listMembers(a.list_id, a.count, a.offset);
       return {
         content: [
           {
@@ -963,12 +1053,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_member":
-      const member = await service.getMember(
-        args.list_id,
-        args.subscriber_hash
-      );
+    case "get_member": {
+      const member = await service.getMember(a.list_id, a.subscriber_hash);
       return {
         content: [
           {
@@ -977,10 +1065,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Segment Management
-    case "list_segments":
-      const segments = await service.listSegments(args.list_id);
+    case "list_segments": {
+      const segments = await service.listSegments(a.list_id, a.count, a.offset);
       return {
         content: [
           {
@@ -999,9 +1088,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_segment":
-      const segment = await service.getSegment(args.list_id, args.segment_id);
+    case "get_segment": {
+      const segment = await service.getSegment(a.list_id, a.segment_id);
       return {
         content: [
           {
@@ -1010,10 +1100,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Template Management
-    case "list_templates":
-      const templates = await service.listTemplates();
+    case "list_templates": {
+      const templates = await service.listTemplates(a.count, a.offset);
       return {
         content: [
           {
@@ -1034,9 +1125,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_template":
-      const template = await service.getTemplate(args.template_id);
+    case "get_template": {
+      const template = await service.getTemplate(a.template_id);
       return {
         content: [
           {
@@ -1045,10 +1137,14 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Campaign Reports
-    case "list_campaign_reports":
-      const campaignReports = await service.listCampaignReports();
+    case "list_campaign_reports": {
+      const campaignReports = await service.listCampaignReports(
+        a.count,
+        a.offset
+      );
       return {
         content: [
           {
@@ -1069,9 +1165,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_campaign_report":
-      const campaignReport = await service.getCampaignReport(args.campaign_id);
+    case "get_campaign_report": {
+      const campaignReport = await service.getCampaignReport(a.campaign_id);
       return {
         content: [
           {
@@ -1080,9 +1177,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Account Information
-    case "get_account":
+    case "get_account": {
       const account = await service.getAccount();
       return {
         content: [
@@ -1092,10 +1190,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Folder Management
-    case "list_folders":
-      const folders = await service.listFolders();
+    case "list_folders": {
+      const folders = await service.listFolders(a.count, a.offset);
       return {
         content: [
           {
@@ -1112,9 +1211,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_folder":
-      const folder = await service.getFolder(args.folder_id);
+    case "get_folder": {
+      const folder = await service.getFolder(a.folder_id);
       return {
         content: [
           {
@@ -1123,10 +1223,15 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Merge Fields
-    case "list_merge_fields":
-      const mergeFields = await service.listMergeFields(args.list_id);
+    case "list_merge_fields": {
+      const mergeFields = await service.listMergeFields(
+        a.list_id,
+        a.count,
+        a.offset
+      );
       return {
         content: [
           {
@@ -1146,11 +1251,12 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_merge_field":
+    case "get_merge_field": {
       const mergeField = await service.getMergeField(
-        args.list_id,
-        args.merge_field_id
+        a.list_id,
+        a.merge_field_id
       );
       return {
         content: [
@@ -1160,10 +1266,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // File Manager
-    case "list_files":
-      const files = await service.listFiles();
+    case "list_files": {
+      const files = await service.listFiles(a.count, a.offset);
       return {
         content: [
           {
@@ -1181,9 +1288,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_file":
-      const file = await service.getFile(args.file_id);
+    case "get_file": {
+      const file = await service.getFile(a.file_id);
       return {
         content: [
           {
@@ -1192,10 +1300,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Landing Pages
-    case "list_landing_pages":
-      const landingPages = await service.listLandingPages();
+    case "list_landing_pages": {
+      const landingPages = await service.listLandingPages(a.count, a.offset);
       return {
         content: [
           {
@@ -1213,9 +1322,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_landing_page":
-      const landingPage = await service.getLandingPage(args.page_id);
+    case "get_landing_page": {
+      const landingPage = await service.getLandingPage(a.page_id);
       return {
         content: [
           {
@@ -1224,10 +1334,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // E-commerce Stores
-    case "list_stores":
-      const stores = await service.listStores();
+    case "list_stores": {
+      const stores = await service.listStores(a.count, a.offset);
       return {
         content: [
           {
@@ -1245,9 +1356,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_store":
-      const store = await service.getStore(args.store_id);
+    case "get_store": {
+      const store = await service.getStore(a.store_id);
       return {
         content: [
           {
@@ -1256,10 +1368,15 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // E-commerce Products
-    case "list_products":
-      const products = await service.listProducts(args.store_id);
+    case "list_products": {
+      const products = await service.listProducts(
+        a.store_id,
+        a.count,
+        a.offset
+      );
       return {
         content: [
           {
@@ -1277,9 +1394,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_product":
-      const product = await service.getProduct(args.store_id, args.product_id);
+    case "get_product": {
+      const product = await service.getProduct(a.store_id, a.product_id);
       return {
         content: [
           {
@@ -1288,10 +1406,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // E-commerce Orders
-    case "list_orders":
-      const orders = await service.listOrders(args.store_id);
+    case "list_orders": {
+      const orders = await service.listOrders(a.store_id, a.count, a.offset);
       return {
         content: [
           {
@@ -1309,9 +1428,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_order":
-      const order = await service.getOrder(args.store_id, args.order_id);
+    case "get_order": {
+      const order = await service.getOrder(a.store_id, a.order_id);
       return {
         content: [
           {
@@ -1320,10 +1440,11 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     // Conversations
-    case "list_conversations":
-      const conversations = await service.listConversations();
+    case "list_conversations": {
+      const conversations = await service.listConversations(a.count, a.offset);
       return {
         content: [
           {
@@ -1344,9 +1465,10 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
-    case "get_conversation":
-      const conversation = await service.getConversation(args.conversation_id);
+    case "get_conversation": {
+      const conversation = await service.getConversation(a.conversation_id);
       return {
         content: [
           {
@@ -1355,6 +1477,7 @@ export const handleToolCall = async (
           },
         ],
       };
+    }
 
     default:
       throw new Error(`Unknown tool: ${name}`);
