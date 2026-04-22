@@ -14,14 +14,38 @@ import {
 import { MailchimpService } from "./services/mailchimp.js";
 import { getToolDefinitions, handleToolCall } from "./tools/index.js";
 
-// Initialize Mailchimp with API key from environment variable
-const MAILCHIMP_API_KEY = process.env.MAILCHIMP_API_KEY;
-if (!MAILCHIMP_API_KEY) {
-  throw new Error("MAILCHIMP_API_KEY environment variable is required");
+// Scrub control characters (incl. CR/LF) to prevent log injection (CWE-117).
+function scrub(s: string): string {
+  return s.replace(/[\x00-\x1f\x7f]/g, " ");
 }
 
-// Initialize the Mailchimp service
-const mailchimpService = new MailchimpService(MAILCHIMP_API_KEY);
+function logEvent(event: string, fields: Record<string, unknown> = {}): void {
+  try {
+    console.error(
+      JSON.stringify({ event, ts: new Date().toISOString(), ...fields })
+    );
+  } catch {
+    console.error(JSON.stringify({ event, ts: new Date().toISOString() }));
+  }
+}
+
+const MAILCHIMP_API_KEY = process.env.MAILCHIMP_API_KEY;
+
+// Service is initialized lazily so the MCP transport can start and report
+// configuration errors as protocol-level errors rather than a startup crash.
+let mailchimpService: MailchimpService | null = null;
+function getService(): MailchimpService {
+  if (!mailchimpService) {
+    if (!MAILCHIMP_API_KEY) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        "MAILCHIMP_API_KEY not configured"
+      );
+    }
+    mailchimpService = new MailchimpService(MAILCHIMP_API_KEY);
+  }
+  return mailchimpService;
+}
 
 const server = new Server(
   {
@@ -35,54 +59,56 @@ const server = new Server(
   }
 );
 
-/**
- * Handler that lists available tools.
- * Exposes all Mailchimp Automations API capabilities as tools.
- */
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
-    tools: getToolDefinitions(mailchimpService),
+    tools: getToolDefinitions(getService()),
   };
 });
 
-/**
- * Handler for tool calls.
- * Routes each tool call to the appropriate Mailchimp service method.
- */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const toolName =
+    typeof request.params.name === "string" ? request.params.name : "";
   try {
     return await handleToolCall(
-      mailchimpService,
-      request.params.name,
+      getService(),
+      toolName,
       request.params.arguments
     );
   } catch (error: any) {
-    console.error("Mailchimp Error:", error);
+    const message =
+      error instanceof Error ? error.message : "Unexpected error";
+    logEvent("tool_call_error", {
+      tool: scrub(toolName).slice(0, 64),
+      message: scrub(String(message)).slice(0, 500),
+    });
 
-    // Handle Mailchimp API errors
-    if (error.message && error.message.includes("Mailchimp API Error:")) {
-      throw new McpError(ErrorCode.InternalError, error.message);
+    if (error instanceof McpError) {
+      throw error;
     }
 
-    // Handle other errors
-    if (error instanceof Error) {
-      throw new McpError(ErrorCode.InternalError, error.message);
+    // Mailchimp service errors are already sanitized (UUID ref, no body).
+    if (typeof message === "string" && message.startsWith("Mailchimp API Error:")) {
+      throw new McpError(ErrorCode.InternalError, message);
     }
 
     throw new McpError(ErrorCode.InternalError, "An unexpected error occurred");
   }
 });
 
-/**
- * Start the server using stdio transport.
- */
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Mailchimp MCP server running on stdio");
+  logEvent("server_started", { transport: "stdio" });
+  if (!MAILCHIMP_API_KEY) {
+    logEvent("config_missing", { key: "MAILCHIMP_API_KEY" });
+  }
 }
 
 main().catch((error) => {
-  console.error("Server error:", error);
+  logEvent("server_fatal", {
+    message: scrub(
+      error instanceof Error ? error.message : "Unexpected fatal error"
+    ).slice(0, 500),
+  });
   process.exit(1);
 });
